@@ -1,0 +1,244 @@
+package filesystem_uefi // import "github.com/configuration-management-tool/mock/pkg/go-filesystems/uefi"
+
+Package filesystem_uefi provides read/write access to UEFI variable stores in
+the OVMF/EDK2 NvVar binary format (non-authenticated variant).
+
+# Overview
+
+UEFI firmware stores runtime configuration variables (boot order, Secure Boot
+keys, timeout, …) in a binary NvVar store on a dedicated pflash chip or in a
+file (e.g. OVMF_VARS.fd, QEMU_VARS.fd). This package lets you open such a file,
+enumerate, read, write, and delete variables without requiring root privileges,
+external binaries, or CGO.
+
+# Getting started
+
+    import fsuefi "github.com/go-filesystems/uefi/src"
+
+    s, err := fsuefi.Open("OVMF_VARS.fd")
+    if err != nil { log.Fatal(err) }
+    defer s.Close()
+
+    // List all variables
+    for _, v := range s.List() {
+        fmt.Printf("%s  attrs=%#x  size=%d\n", v.Name, v.Attributes, len(v.Data))
+    }
+
+    // Write a variable
+    err = s.Set(fsuefi.Variable{
+        Name:       "MyVar",
+        GUID:       fsuefi.DefaultNamespaceGUID,
+        Attributes: fsuefi.AttrNonVolatile | fsuefi.AttrBootServiceAccess | fsuefi.AttrRuntimeAccess,
+        Data:       []byte{0x01, 0x02},
+    })
+
+# Interfaces
+
+Open returns a Store interface — callers never hold a concrete struct pointer.
+Store combines two sub-interfaces:
+
+  - VariableStore: UEFI-specific operations (List, Get, Set, Delete).
+  - filesystem.Filesystem (from github.com/go-filesystems/interface):
+    generic filesystem operations (ReadFile, WriteFile, ListDir, Stat, …).
+    Variable names are used as paths; DefaultNamespaceGUID is the namespace.
+
+# Binary format
+
+The store starts with a VARIABLE_STORE_HEADER (28 bytes) followed by zero
+or more VARIABLE_HEADERs (32 bytes each). Variable names are encoded as
+null-terminated UTF-16LE; data payloads follow the name with 4-byte alignment.
+Deleted variables are skipped on read; writes reconstruct the full file from the
+surviving variables.
+
+Supported store signatures: EFIVariableGUID (non-authenticated) and
+EFIAuthenticatedVariableGUID (authenticated). Authenticated write validation
+(time-based signatures) is not performed.
+
+# Secure Boot use case
+
+See docs/uefi-secure-boot-qemu.md in the parent repository for a step-by-step
+guide to enrolling PK / KEK / db keys into OVMF_VARS.fd and launching a Secure
+Boot VM under QEMU on x86-64 and arm64.
+
+Package filesystem_uefi provides read/write access to UEFI variable stores in
+the OVMF/EDK2 NvVar binary format (non-authenticated variant).
+
+CONSTANTS
+
+const (
+	VariableData   = 0x55AA // VARIABLE_DATA start marker
+	StoreFormatted = 0x5A   // VARIABLE_STORE_FORMATTED
+	StoreHealthy   = 0xFE   // VARIABLE_STORE_HEALTHY
+
+	VarAdded   = 0x3F // complete, valid variable
+	VarDeleted = 0xFD // obsolete/deleted
+
+	StoreHeaderSize = 28 // sizeof(VARIABLE_STORE_HEADER)
+	VarHeaderSize   = 32 // sizeof(VARIABLE_HEADER)
+
+)
+    Binary format constants derived from EDK2
+    MdeModulePkg/Include/Guid/VariableFormat.h.
+
+
+VARIABLES
+
+var (
+	// EFIGlobalVariableGUID is the namespace for PK and KEK variables.
+	// {8be4df61-93ca-11d2-aa0d-00e098032b8c}
+	EFIGlobalVariableGUID = GUID{
+		0x61, 0xdf, 0xe4, 0x8b,
+		0xca, 0x93,
+		0xd2, 0x11,
+		0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c,
+	}
+
+	// EFIImageSecurityDatabaseGUID is the namespace for db and dbx variables.
+	// {d719b2cb-3d3a-4596-a3bc-dad00e67656f}
+	EFIImageSecurityDatabaseGUID = GUID{
+		0xcb, 0xb2, 0x19, 0xd7,
+		0x3a, 0x3d,
+		0x96, 0x45,
+		0xa3, 0xbc, 0xda, 0xd0, 0x0e, 0x67, 0x65, 0x6f,
+	}
+
+	// EFICertX509GUID is the SignatureType GUID for X.509 certificates in an
+	// EFI_SIGNATURE_LIST. {a5c059a1-94e4-4aa7-87b5-ab155c2bf072}
+	EFICertX509GUID = GUID{
+		0xa1, 0x59, 0xc0, 0xa5,
+		0xe4, 0x94,
+		0xa7, 0x4a,
+		0x87, 0xb5, 0xab, 0x15, 0x5c, 0x2b, 0xf0, 0x72,
+	}
+)
+    Well-known GUIDs for Secure Boot variable management.
+
+var DefaultNamespaceGUID = GUID{
+	0x61, 0xdf, 0xe4, 0x8b,
+	0xca, 0x93,
+	0xd2, 0x11,
+	0xaa, 0x0d, 0x00, 0xe0, 0x98, 0x03, 0x2b, 0x8c,
+}
+    DefaultNamespaceGUID is used by the filesystem.Filesystem adapter when no
+    GUID is embedded in the path. It equals EFI_GLOBAL_VARIABLE_GUID.
+
+        {8be4df61-93ca-11d2-aa0d-00e098032b8c}
+
+var EFIAuthenticatedVariableGUID = GUID{
+	0x78, 0x2c, 0xf3, 0xaa,
+	0x7b, 0x94,
+	0x9a, 0x43,
+	0xa1, 0x80, 0x2e, 0x14, 0x4e, 0xc3, 0x77, 0x92,
+}
+    EFIAuthenticatedVariableGUID is the store signature GUID for authenticated
+    NvVar stores. {0xaaf32c78, 0x947b, 0x439a, {0xa1, 0x80, 0x2e, 0x14, 0x4e,
+    0xc3, 0x77, 0x92}}
+
+var EFIVariableGUID = GUID{
+	0x16, 0x36, 0xcf, 0xdd,
+	0x75, 0x32,
+	0x64, 0x41,
+	0x98, 0xb6, 0xfe, 0x85, 0x70, 0x7f, 0xfe, 0x7d,
+}
+    EFIVariableGUID is the store signature GUID for non-authenticated NvVar
+    stores. {0xddcf3616, 0x3275, 0x4164, {0x98, 0xb6, 0xfe, 0x85, 0x70, 0x7f,
+    0xfe, 0x7d}}
+
+
+FUNCTIONS
+
+func BuildEFISignatureList(ownerGUID GUID, certDER []byte) []byte
+    BuildEFISignatureList encodes a single DER-encoded X.509 certificate into an
+    EFI_SIGNATURE_LIST binary blob suitable for writing into PK, KEK, db or dbx.
+
+    ownerGUID identifies the entity that owns the certificate (e.g.
+    EFIGlobalVariableGUID for vendor keys). certDER must be a valid DER-encoded
+    X.509 certificate; no structural validation is performed.
+
+    Layout (all little-endian):
+
+         0-15  SignatureType GUID (EFICertX509GUID)
+        16-19  SignatureListSize
+        20-23  SignatureHeaderSize (always 0 for X.509)
+        24-27  SignatureSize = 16 + len(certDER)
+        28-43  SignatureOwner GUID
+        44-…   certDER bytes
+
+func DecodeUTF16LE(b []byte) (string, error)
+    DecodeUTF16LE converts a UTF-16LE byte slice (may include null terminator)
+    to a Go string.
+
+func EncodeUTF16LE(s string) []byte
+    EncodeUTF16LE converts a Go string to UTF-16LE bytes with null terminator.
+
+func EnrollSecureBootKeys(store VariableStore, keys SecureBootKeys) error
+    EnrollSecureBootKeys writes PK, KEK and db into the variable store at store.
+    Variables are enrolled in the order db → KEK → PK: writing PK last causes
+    OVMF to leave Setup Mode and activate Secure Boot (User Mode). After that,
+    any PK or KEK change must be signed with the previous key.
+
+
+TYPES
+
+type Attributes uint32
+    Attributes holds EFI variable attribute flags.
+
+const (
+	AttrNonVolatile                       Attributes = 0x00000001
+	AttrBootServiceAccess                 Attributes = 0x00000002
+	AttrRuntimeAccess                     Attributes = 0x00000004
+	AttrHardwareErrorRecord               Attributes = 0x00000008
+	AttrTimeBasedAuthenticatedWriteAccess Attributes = 0x00000020
+	AttrAppendWrite                       Attributes = 0x00000040
+)
+type GUID [16]byte
+    GUID represents a 16-byte EFI GUID stored in mixed-endian on-disk format.
+    Bytes 0-3: Data1 LE, 4-5: Data2 LE, 6-7: Data3 LE, 8-15: Data4 big-endian.
+
+type SecureBootKeys struct {
+	// PK is the Platform Key certificate. Writing PK last activates User Mode.
+	PK []byte
+	// KEK is the Key Exchange Key certificate.
+	KEK []byte
+	// DB is the allowed-signatures database certificate.
+	DB []byte
+}
+    SecureBootKeys holds the three certificates required to activate Secure
+    Boot. All certificates must be DER-encoded X.509.
+
+type Store interface {
+	VariableStore
+	filesystem.Filesystem
+}
+    Store is the full interface returned by Open. It combines UEFI variable
+    operations (VariableStore) with the generic filesystem.Filesystem surface,
+    allowing the store to be used by tooling that operates on any filesystem
+    driver in this repository.
+
+func Open(path string) (Store, error)
+    Open opens a UEFI variable store file and parses its contents. It returns a
+    Store, which combines VariableStore and filesystem.Filesystem.
+
+type Variable struct {
+	Name       string
+	GUID       GUID
+	Attributes Attributes
+	Data       []byte
+}
+    Variable is a single parsed UEFI variable.
+
+type VariableStore interface {
+	// Close releases any resources held by the store.
+	Close() error
+	// List returns a copy of all valid (non-deleted) variables in the store.
+	List() []Variable
+	// Get retrieves a variable by name and GUID namespace.
+	Get(name string, guid GUID) (Variable, error)
+	// Set creates or replaces a variable; the backing file is rewritten.
+	Set(v Variable) error
+	// Delete removes a variable by name and GUID; returns an error if not found.
+	Delete(name string, guid GUID) error
+}
+    VariableStore provides read/write access to a UEFI NvVar variable store.
+    All write operations (Set, Delete) serialize through the backing file.
+

@@ -1,0 +1,18 @@
+version: '3'
+
+tasks:
+  test:
+    desc: "Run tests with 100% coverage"
+    cmds:
+      - go test -mod=mod -coverprofile=cover.out -coverpkg=github.com/go-filesystems/uefi ./test/...
+      - go tool cover -func=cover.out
+
+  build:
+    desc: "Build the module"
+    cmds:
+      - go build -mod=mod ./...
+
+  lint:
+    desc: "Vet the module"
+    cmds:
+      - go vet -mod=mod ./...

@@ -1,0 +1,436 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>uefi: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/go-filesystems/uefi/uefi.go (94.5%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// Package filesystem_uefi provides read/write access to UEFI variable stores
+// in the OVMF/EDK2 NvVar binary format (non-authenticated variant).
+package filesystem_uefi
+
+import (
+        "encoding/binary"
+        "errors"
+        "fmt"
+        "os"
+        "unicode/utf16"
+)
+
+// Binary format constants derived from EDK2 MdeModulePkg/Include/Guid/VariableFormat.h.
+const (
+        variableData    = 0x55AA // VARIABLE_DATA start marker
+        storeFormatted  = 0x5A   // VARIABLE_STORE_FORMATTED
+        storeHealthy    = 0xFE   // VARIABLE_STORE_HEALTHY
+
+        varInDeletedTransition = 0xFE // header written, data incomplete
+        varAdded               = 0x3F // complete, valid variable
+        varDeleted             = 0xFD // obsolete/deleted
+        varHeaderValidOnly     = 0x7F
+
+        storeHeaderSize = 28 // sizeof(VARIABLE_STORE_HEADER)
+        varHeaderSize   = 32 // sizeof(VARIABLE_HEADER)
+        headerAlignment = 4  // HEADER_ALIGNMENT
+)
+
+// GUID represents a 16-byte EFI GUID stored in mixed-endian on-disk format.
+// Bytes 0-3: Data1 LE, 4-5: Data2 LE, 6-7: Data3 LE, 8-15: Data4 big-endian.
+type GUID [16]byte
+
+// Attributes holds EFI variable attribute flags.
+type Attributes uint32
+
+const (
+        AttrNonVolatile                       Attributes = 0x00000001
+        AttrBootServiceAccess                 Attributes = 0x00000002
+        AttrRuntimeAccess                     Attributes = 0x00000004
+        AttrHardwareErrorRecord               Attributes = 0x00000008
+        AttrTimeBasedAuthenticatedWriteAccess Attributes = 0x00000020
+        AttrAppendWrite                       Attributes = 0x00000040
+)
+
+// EFI_VARIABLE_GUID: {0xddcf3616, 0x3275, 0x4164, {0x98, 0xb6, 0xfe, 0x85, 0x70, 0x7f, 0xfe, 0x7d}}
+var efiVariableGUID = GUID{
+        0x16, 0x36, 0xcf, 0xdd, // Data1 LE
+        0x75, 0x32, // Data2 LE
+        0x64, 0x41, // Data3 LE
+        0x98, 0xb6, 0xfe, 0x85, 0x70, 0x7f, 0xfe, 0x7d,
+}
+
+// EFI_AUTHENTICATED_VARIABLE_GUID: {0xaaf32c78, 0x947b, 0x439a, {0xa1, 0x80, 0x2e, 0x14, 0x4e, 0xc3, 0x77, 0x92}}
+var efiAuthenticatedVariableGUID = GUID{
+        0x78, 0x2c, 0xf3, 0xaa,
+        0x7b, 0x94,
+        0x9a, 0x43,
+        0xa1, 0x80, 0x2e, 0x14, 0x4e, 0xc3, 0x77, 0x92,
+}
+
+// Variable is a single parsed UEFI variable.
+type Variable struct {
+        Name       string
+        GUID       GUID
+        Attributes Attributes
+        Data       []byte
+}
+
+// Store provides access to an UEFI variable store file.
+type Store struct {
+        path string
+        vars []Variable
+}
+
+// openFile is replaceable for testing.
+var openFile = os.OpenFile
+
+// Open opens a UEFI variable store file and parses its contents.
+func Open(path string) (*Store, error) <span class="cov8" title="1">{
+        data, err := os.ReadFile(path)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("uefi: read file: %w", err)
+        }</span>
+        <span class="cov8" title="1">vars, err := parseVariables(data)
+        if err != nil </span><span class="cov8" title="1">{
+                return nil, fmt.Errorf("uefi: parse: %w", err)
+        }</span>
+        <span class="cov8" title="1">return &amp;Store{path: path, vars: vars}, nil</span>
+}
+
+// Close is a no-op for file-backed stores (reads are done eagerly).
+func (s *Store) Close() error <span class="cov8" title="1">{
+        return nil
+}</span>
+
+// List returns a copy of all valid variables in the store.
+func (s *Store) List() []Variable <span class="cov8" title="1">{
+        out := make([]Variable, len(s.vars))
+        copy(out, s.vars)
+        return out
+}</span>
+
+// Get retrieves a variable by name and GUID. Returns an error if not found.
+func (s *Store) Get(name string, guid GUID) (Variable, error) <span class="cov8" title="1">{
+        for _, v := range s.vars </span><span class="cov8" title="1">{
+                if v.Name == name &amp;&amp; v.GUID == guid </span><span class="cov8" title="1">{
+                        return v, nil
+                }</span>
+        }
+        <span class="cov8" title="1">return Variable{}, fmt.Errorf("uefi: variable %q not found", name)</span>
+}
+
+// Set creates or replaces a variable. The store file is rewritten atomically.
+func (s *Store) Set(v Variable) error <span class="cov8" title="1">{
+        newVars := make([]Variable, 0, len(s.vars)+1)
+        for _, existing := range s.vars </span><span class="cov8" title="1">{
+                if existing.Name == v.Name &amp;&amp; existing.GUID == v.GUID </span><span class="cov8" title="1">{
+                        continue</span>
+                }
+                <span class="cov0" title="0">newVars = append(newVars, existing)</span>
+        }
+        <span class="cov8" title="1">newVars = append(newVars, v)
+        return s.flush(newVars)</span>
+}
+
+// Delete removes a variable by name and GUID. Returns an error if not found.
+func (s *Store) Delete(name string, guid GUID) error <span class="cov8" title="1">{
+        newVars := make([]Variable, 0, len(s.vars))
+        found := false
+        for _, existing := range s.vars </span><span class="cov8" title="1">{
+                if existing.Name == name &amp;&amp; existing.GUID == guid </span><span class="cov8" title="1">{
+                        found = true
+                        continue</span>
+                }
+                <span class="cov0" title="0">newVars = append(newVars, existing)</span>
+        }
+        <span class="cov8" title="1">if !found </span><span class="cov8" title="1">{
+                return fmt.Errorf("uefi: variable %q not found", name)
+        }</span>
+        <span class="cov8" title="1">return s.flush(newVars)</span>
+}
+
+// flush serializes vars and writes the store back to disk.
+func (s *Store) flush(vars []Variable) error <span class="cov8" title="1">{
+        // Read original file to obtain the store size from the original header.
+        orig, err := os.ReadFile(s.path)
+        if err != nil </span><span class="cov8" title="1">{
+                return fmt.Errorf("uefi: read original: %w", err)
+        }</span>
+        <span class="cov8" title="1">if len(orig) &lt; storeHeaderSize </span><span class="cov0" title="0">{
+                return errors.New("uefi: file too small")
+        }</span>
+        <span class="cov8" title="1">storeSize := binary.LittleEndian.Uint32(orig[16:20])
+        payload, err := serializeVars(vars)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">buf, err := buildStore(orig, storeSize, payload)
+        if err != nil </span><span class="cov8" title="1">{
+                return err
+        }</span>
+        <span class="cov8" title="1">s.vars = vars
+        return os.WriteFile(s.path, buf, 0o644)</span>
+}
+
+// buildStore constructs the full file bytes: store header + serialized vars + zero-padding.
+func buildStore(orig []byte, storeSize uint32, payload []byte) ([]byte, error) <span class="cov8" title="1">{
+        if uint32(storeHeaderSize)+uint32(len(payload)) &gt; storeSize </span><span class="cov8" title="1">{
+                return nil, errors.New("uefi: variables exceed store size")
+        }</span>
+        <span class="cov8" title="1">buf := make([]byte, len(orig))
+        copy(buf, orig)
+        // Clear the variable region and fill with 0xFF (flash erased state).
+        for i := storeHeaderSize; i &lt; int(storeSize); i++ </span><span class="cov8" title="1">{
+                buf[i] = 0xFF
+        }</span>
+        <span class="cov8" title="1">copy(buf[storeHeaderSize:], payload)
+        return buf, nil</span>
+}
+
+// parseVariables parses all valid variables from the raw store bytes.
+func parseVariables(data []byte) ([]Variable, error) <span class="cov8" title="1">{
+        if err := validateStoreHeader(data); err != nil </span><span class="cov8" title="1">{
+                return nil, err
+        }</span>
+        <span class="cov8" title="1">storeSize := binary.LittleEndian.Uint32(data[16:20])
+        if uint32(len(data)) &lt; storeSize </span><span class="cov8" title="1">{
+                storeSize = uint32(len(data))
+        }</span>
+        <span class="cov8" title="1">var vars []Variable
+        off := uint32(storeHeaderSize)
+        for off+uint32(varHeaderSize) &lt;= storeSize </span><span class="cov8" title="1">{
+                v, next, err := parseOneVariable(data, off, storeSize)
+                if err != nil </span><span class="cov8" title="1">{
+                        break</span>
+                }
+                <span class="cov8" title="1">if v != nil </span><span class="cov8" title="1">{
+                        vars = append(vars, *v)
+                }</span>
+                <span class="cov8" title="1">off = next</span>
+        }
+        <span class="cov8" title="1">return vars, nil</span>
+}
+
+// validateStoreHeader checks that the store header is valid.
+func validateStoreHeader(data []byte) error <span class="cov8" title="1">{
+        if len(data) &lt; storeHeaderSize </span><span class="cov8" title="1">{
+                return errors.New("store too small for header")
+        }</span>
+        <span class="cov8" title="1">var sig GUID
+        copy(sig[:], data[:16])
+        if sig != efiVariableGUID &amp;&amp; sig != efiAuthenticatedVariableGUID </span><span class="cov8" title="1">{
+                return errors.New("unrecognised store signature GUID")
+        }</span>
+        <span class="cov8" title="1">if data[20] != storeFormatted </span><span class="cov8" title="1">{
+                return errors.New("store not formatted")
+        }</span>
+        <span class="cov8" title="1">if data[21] != storeHealthy </span><span class="cov8" title="1">{
+                return errors.New("store not healthy")
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// parseOneVariable reads a single variable header at off and returns the variable
+// (nil if deleted/invalid) and the offset of the next header.
+func parseOneVariable(data []byte, off, storeSize uint32) (*Variable, uint32, error) <span class="cov8" title="1">{
+        if binary.LittleEndian.Uint16(data[off:off+2]) != variableData </span><span class="cov8" title="1">{
+                return nil, storeSize, errors.New("end of variable region")
+        }</span>
+        <span class="cov8" title="1">state := data[off+2]
+        attrs := binary.LittleEndian.Uint32(data[off+4:])
+        nameSize := binary.LittleEndian.Uint32(data[off+8:])
+        dataSize := binary.LittleEndian.Uint32(data[off+12:])
+        var guid GUID
+        copy(guid[:], data[off+16:off+32])
+
+        nameOff := off + uint32(varHeaderSize)
+        dataOff := nameOff + nameSize
+        dataOff = alignUp(dataOff)
+        next := alignUp(dataOff + dataSize)
+
+        if next &gt; storeSize </span><span class="cov8" title="1">{
+                return nil, storeSize, errors.New("variable extends beyond store")
+        }</span>
+        <span class="cov8" title="1">if state != varAdded </span><span class="cov0" title="0">{
+                return nil, next, nil // skip deleted/transitional
+        }</span>
+        <span class="cov8" title="1">name, err := decodeUTF16LE(data[nameOff : nameOff+nameSize])
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, next, nil
+        }</span>
+        <span class="cov8" title="1">payload := make([]byte, dataSize)
+        copy(payload, data[dataOff:dataOff+dataSize])
+        return &amp;Variable{Name: name, GUID: guid, Attributes: Attributes(attrs), Data: payload}, next, nil</span>
+}
+
+// serializeVars encodes a slice of variables as a contiguous byte sequence.
+func serializeVars(vars []Variable) ([]byte, error) <span class="cov8" title="1">{
+        var buf []byte
+        for _, v := range vars </span><span class="cov8" title="1">{
+                b, err := encodeVariable(v)
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, err
+                }</span>
+                <span class="cov8" title="1">buf = append(buf, b...)</span>
+        }
+        <span class="cov8" title="1">return buf, nil</span>
+}
+
+// encodeVariable encodes a single variable to its on-disk binary form.
+func encodeVariable(v Variable) ([]byte, error) <span class="cov8" title="1">{
+        nameBuf := encodeUTF16LE(v.Name)
+        nameSize := uint32(len(nameBuf))
+        dataSize := uint32(len(v.Data))
+
+        hdr := make([]byte, varHeaderSize)
+        binary.LittleEndian.PutUint16(hdr[0:], variableData)
+        hdr[2] = varAdded
+        hdr[3] = 0
+        binary.LittleEndian.PutUint32(hdr[4:], uint32(v.Attributes))
+        binary.LittleEndian.PutUint32(hdr[8:], nameSize)
+        binary.LittleEndian.PutUint32(hdr[12:], dataSize)
+        copy(hdr[16:], v.GUID[:])
+
+        namePad := padBytes(nameSize)
+        dataPad := padBytes(uint32(varHeaderSize) + nameSize + uint32(len(namePad)) + dataSize)
+
+        var buf []byte
+        buf = append(buf, hdr...)
+        buf = append(buf, nameBuf...)
+        buf = append(buf, namePad...)
+        buf = append(buf, v.Data...)
+        buf = append(buf, dataPad...)
+        return buf, nil
+}</span>
+
+// alignUp aligns n to the next headerAlignment boundary.
+func alignUp(n uint32) uint32 <span class="cov8" title="1">{
+        return (n + headerAlignment - 1) &amp;^ (headerAlignment - 1)
+}</span>
+
+// padBytes returns the padding needed to align the end of a field of size n.
+func padBytes(n uint32) []byte <span class="cov8" title="1">{
+        pad := alignUp(n) - n
+        return make([]byte, pad)
+}</span>
+
+// decodeUTF16LE converts a UTF-16LE byte slice (may include null terminator) to a Go string.
+func decodeUTF16LE(b []byte) (string, error) <span class="cov8" title="1">{
+        if len(b)%2 != 0 </span><span class="cov8" title="1">{
+                return "", errors.New("odd-length UTF-16LE buffer")
+        }</span>
+        <span class="cov8" title="1">u16 := make([]uint16, len(b)/2)
+        for i := range u16 </span><span class="cov8" title="1">{
+                u16[i] = binary.LittleEndian.Uint16(b[i*2:])
+        }</span>
+        // strip null terminator
+        <span class="cov8" title="1">if len(u16) &gt; 0 &amp;&amp; u16[len(u16)-1] == 0 </span><span class="cov8" title="1">{
+                u16 = u16[:len(u16)-1]
+        }</span>
+        <span class="cov8" title="1">return string(utf16.Decode(u16)), nil</span>
+}
+
+// encodeUTF16LE converts a Go string to UTF-16LE bytes with null terminator.
+func encodeUTF16LE(s string) []byte <span class="cov8" title="1">{
+        u16 := utf16.Encode([]rune(s))
+        u16 = append(u16, 0) // null terminator
+        b := make([]byte, len(u16)*2)
+        for i, v := range u16 </span><span class="cov8" title="1">{
+                binary.LittleEndian.PutUint16(b[i*2:], v)
+        }</span>
+        <span class="cov8" title="1">return b</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>
