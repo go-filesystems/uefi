@@ -14,7 +14,7 @@ Targets the non-authenticated NvVar store (`OVMF_VARS.fd`, `QEMU_VARS.fd`). Typi
 | Get | ✅ | Lookup by name + GUID |
 | Set | ✅ | Create or replace; rewrites store atomically |
 | Delete | ✅ | Removes a variable; rewrites store atomically |
-| Authenticated writes | ⚠️ No | Time-based authenticated variables require a signature chain |
+| Authenticated writes | ✅ | Builds & signs `EFI_VARIABLE_AUTHENTICATION_2` (EFI_TIME + PKCS#7) for time-based authenticated variables (PK/KEK/db/dbx) |
 
 ## Module
 
