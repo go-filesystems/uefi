@@ -9,6 +9,7 @@ Targets the non-authenticated NvVar store (`OVMF_VARS.fd`, `QEMU_VARS.fd`). Typi
 | Feature | Status | Notes |
 |---|---:|---|
 | Open / Close | ✅ | Parses NvVar variable store header |
+| Format / FormatOVMF | ✅ | Create a fresh, empty NvVar store |
 | List | ✅ | Returns all valid (non-deleted) variables |
 | Get | ✅ | Lookup by name + GUID |
 | Set | ✅ | Create or replace; rewrites store atomically |
