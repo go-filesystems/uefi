@@ -49,8 +49,13 @@
 // full file from the surviving variables.
 //
 // Supported store signatures: [EFIVariableGUID] (non-authenticated) and
-// [EFIAuthenticatedVariableGUID] (authenticated). Authenticated write
-// validation (time-based signatures) is not performed.
+// [EFIAuthenticatedVariableGUID] (authenticated). Incoming authenticated
+// writes are not signature-verified (firmware does that at runtime), but the
+// package can *construct and sign* time-based authenticated writes — see
+// [WriteAuthenticatedVariable] and [BuildAuthentication2], which build an
+// EFI_VARIABLE_AUTHENTICATION_2 descriptor (EFI_TIME +
+// WIN_CERTIFICATE_UEFI_GUID wrapping a PKCS#7 SignedData) using a caller-
+// supplied RSA key and X.509 certificate.
 //
 // # Secure Boot use case
 //
