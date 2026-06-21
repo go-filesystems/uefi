@@ -132,6 +132,7 @@ func TestFilesystem_Rename_Success(t *testing.T) {
 // TestFilesystem_Rename_WriteFail expects an error when the backing file is
 // read-only and the copy step (Set) cannot flush to disk.
 func TestFilesystem_Rename_WriteFail(t *testing.T) {
+	skipIfRoot(t)
 	v := makeVar("OldName", testGUID, []byte{0x01})
 	s, path := openStoreWith(t, 4096, v)
 

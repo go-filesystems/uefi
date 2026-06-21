@@ -537,6 +537,7 @@ func TestStress_FaultInjection_ReadOnly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipped in -short mode")
 	}
+	skipIfRoot(t)
 
 	store, path := newStressStore(t, fsuefi.VarsSizeX86_64)
 

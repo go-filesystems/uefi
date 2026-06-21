@@ -50,6 +50,18 @@ func openStoreWith(t *testing.T, storeSize uint32, vars ...fsuefi.Variable) (fsu
 	return s, path
 }
 
+// skipIfRoot skips a test that relies on filesystem permission bits to force an
+// I/O failure (e.g. chmod 0o444 then expecting a write to fail). The emulated CI
+// jobs run as uid 0 inside docker/QEMU, where permission bits are ignored — root
+// writes a 0o444 file regardless — so the expected error never occurs. The
+// native (non-root) jobs still exercise these paths.
+func skipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("skipping permission-failure test: running as root, where chmod 0o444 does not block writes")
+	}
+}
+
 // mustChmod changes file permissions and registers a cleanup to restore 0o644.
 func mustChmod(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()

@@ -97,6 +97,7 @@ func TestEnrollSecureBootKeys_Success(t *testing.T) {
 // TestEnrollSecureBootKeys_StoreError verifies that an error from the store
 // during db enrollment is propagated.
 func TestEnrollSecureBootKeys_StoreError(t *testing.T) {
+	skipIfRoot(t)
 	s, path := openStoreWith(t, 16*1024)
 	// Make the backing file read-only so Set → flush fails.
 	mustChmod(t, path, 0o444)
