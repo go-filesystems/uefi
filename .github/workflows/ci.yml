@@ -1,0 +1,161 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Native runners: full lint + build + test (coverage) via the Taskfile,
+  # exactly as a developer runs it locally. The COVERAGE_FLOOR gate is
+  # enforced on the combined (-coverpkg=github.com/go-filesystems/uefi)
+  # profile that `task ci` writes to cover.out.
+  native:
+    name: native ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runs-on: ubuntu-latest
+          - arch: arm64
+            runs-on: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runs-on }}
+    env:
+      # Coverage floor on the -coverpkg=uefi profile. The full test/ suite
+      # measures 94.6%; gate just below it so the build stays green while
+      # still catching regressions.
+      COVERAGE_FLOOR: "94.0"
+    steps:
+      - name: Checkout uefi
+        uses: actions/checkout@v4
+        with:
+          path: uefi
+
+      # go.mod carries `replace github.com/go-filesystems/interface =>
+      # ../interface`, so the sibling module must sit next to this one.
+      - name: Checkout interface (sibling replace target)
+        uses: actions/checkout@v4
+        with:
+          repository: go-filesystems/interface
+          path: interface
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+          cache-dependency-path: uefi/go.mod
+
+      - name: Install Task
+        uses: arduino/setup-task@v2
+        with:
+          version: 3.x
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run Taskfile ci
+        working-directory: uefi
+        env:
+          CGO_ENABLED: "0"
+        run: task ci
+
+      - name: Enforce coverage floor
+        working-directory: uefi
+        run: |
+          set -euo pipefail
+          total=$(go tool cover -func=cover.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+          echo "total coverage: ${total}% (floor: ${COVERAGE_FLOOR}%)"
+          awk -v t="$total" -v f="$COVERAGE_FLOOR" \
+            'BEGIN { if (t+0 < f+0) { printf "coverage %.1f%% below floor %.1f%%\n", t, f; exit 1 } }'
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.arch }}
+          path: uefi/cover.out
+          if-no-files-found: ignore
+
+  # Emulated runners: cross-compile a static (CGO_ENABLED=0) test binary for
+  # the test/ package and run it under QEMU for each non-native 64-bit arch.
+  #
+  # s390x is big-endian, which exercises the UEFI byte-order handling: the
+  # GPT / FAT / EFI-variable-store decoders use explicit binary.LittleEndian,
+  # so reads stay host-endianness-independent.
+  #
+  # The test binary reads its EDK2 varstore fixtures from ../testdata/
+  # (relative to uefi/test), so it runs with the repo checkout mounted and the
+  # working directory set to uefi/test. -test.short skips the slow QEMU-backed
+  # stress / boot tests, which are impractical under emulation.
+  emulated:
+    name: emulated ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: riscv64
+            image: debian:trixie
+            qemu: rv64,v=true,vlen=128
+          - arch: loong64
+            image: ghcr.io/loong64/debian:trixie
+            qemu: la464
+          - arch: ppc64le
+            image: debian:trixie
+            qemu: power9
+          - arch: s390x
+            image: debian:trixie
+            qemu: qemu
+    steps:
+      - name: Checkout uefi
+        uses: actions/checkout@v4
+        with:
+          path: uefi
+
+      - name: Checkout interface (sibling replace target)
+        uses: actions/checkout@v4
+        with:
+          repository: go-filesystems/interface
+          path: interface
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          check-latest: true
+          cache: true
+          cache-dependency-path: uefi/go.mod
+
+      - name: Register QEMU binfmt handlers
+        run: docker run --rm --privileged tonistiigi/binfmt --install all
+
+      - name: Cross-compile test binary
+        working-directory: uefi
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          # Build into test/ so ../testdata resolves when test/ is the workdir.
+          go test -c -cover -o test/uefi.test ./test/
+          ls -la test/uefi.test
+
+      - name: Run test binary under QEMU (${{ matrix.arch }})
+        env:
+          QEMU_CPU: ${{ matrix.qemu }}
+        run: |
+          set -euo pipefail
+          repo="${{ github.workspace }}/uefi"
+          docker run --rm \
+            --platform linux/${{ matrix.arch }} \
+            -e QEMU_CPU="${QEMU_CPU}" \
+            -v "$repo":"$repo" -w "$repo/test" \
+            ${{ matrix.image }} \
+            ./uefi.test -test.v -test.short -test.timeout=20m

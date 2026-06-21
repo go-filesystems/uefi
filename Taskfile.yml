@@ -16,3 +16,10 @@ tasks:
     desc: "Vet the module"
     cmds:
       - go vet -mod=mod ./...
+
+  ci:
+    desc: "Run lint + build + test (used by the GitHub Actions workflow)"
+    cmds:
+      - task: lint
+      - task: build
+      - task: test
