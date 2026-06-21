@@ -1,4 +1,10 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-filesystems/brand/main/social/go-filesystems-uefi.png" alt="go-filesystems/uefi" width="720"></p>
+
 # uefi
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-filesystems/uefi.svg)](https://pkg.go.dev/github.com/go-filesystems/uefi)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![CI](https://github.com/go-filesystems/uefi/actions/workflows/ci.yml/badge.svg)](https://github.com/go-filesystems/uefi/actions/workflows/ci.yml)
 
 Pure-Go read/write access to UEFI variable stores in the OVMF/EDK2 NvVar binary format — no root privileges, no external tools, no CGO.
 
