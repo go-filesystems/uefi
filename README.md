@@ -19,6 +19,8 @@ Targets the non-authenticated NvVar store (`OVMF_VARS.fd`, `QEMU_VARS.fd`). Typi
 | Get | ✅ | Lookup by name + GUID |
 | Set | ✅ | Create or replace; rewrites store atomically |
 | Delete | ✅ | Removes a variable; rewrites store atomically |
+| Boot variables | ✅ | `BootOrder` / `Boot####` / `BootNext` / `Timeout` semantic layer with `EFI_LOAD_OPTION` + device-path parse/marshal |
+| Secure Boot enrolment | ✅ | `EnrollSecureBootKeys` (PK/KEK/db) over `EFI_SIGNATURE_LIST` |
 | Authenticated writes | ⚠️ No | Time-based authenticated variables require a signature chain |
 
 ## Module
@@ -160,3 +162,66 @@ err = fsuefi.EnrollSecureBootKeys(store, fsuefi.SecureBootKeys{
 
 For the complete guide (key generation, disk image creation, QEMU command lines for
 x86-64 and arm64): [docs/uefi-secure-boot-qemu.md](../../../docs/uefi-secure-boot-qemu.md).
+
+## Boot variable management
+
+A semantic layer over the raw variable store models the UEFI boot manager:
+`BootOrder`, `Boot####`, `BootNext`, `BootCurrent` and `Timeout`. Boot entries
+are `EFI_LOAD_OPTION` records, each carrying an `EFI_DEVICE_PATH_PROTOCOL`
+node list that is parsed and marshalled with exact byte round-trip. All parsing
+is bounds-checked against malicious input via `go-volumes/safeio`.
+
+```go
+store, _ := fsuefi.Open("OVMF_VARS.fd")
+defer store.Close()
+
+// Build a Linux/Windows-style \EFI\BOOT\BOOTX64.EFI entry on GPT partition 1.
+hd := fsuefi.HardDriveNode{
+    PartitionNumber: 1, PartitionStart: 0x800, PartitionSize: 0x100000,
+    MBRType: fsuefi.HDMBRTypeGPT, SignatureType: fsuefi.HDSigTypeGUID,
+}
+lo := &fsuefi.LoadOption{
+    Attributes:  fsuefi.LoadOptionActive,
+    Description: "UEFI OS",
+    DevicePath: []fsuefi.DevicePathNode{
+        hd.Node(),
+        fsuefi.FilePathNode(`\EFI\BOOT\BOOTX64.EFI`),
+    },
+}
+
+n, _ := fsuefi.AddBootEntry(store, lo)   // writes Boot#### + appends to BootOrder
+fsuefi.SetBootNext(store, n)             // one-shot: boot this entry next time
+fsuefi.SetTimeout(store, 5)              // menu timeout, seconds
+
+println(lo.Text()) // HD(1,GPT,...,0x800,0x100000)/File(\EFI\BOOT\BOOTX64.EFI)
+```
+
+### Boot-manager API
+
+```go
+// Boot order (packed UINT16 LE array).
+func BootOrder(store VariableStore) ([]uint16, error)
+func SetBootOrder(store VariableStore, order []uint16) error
+
+// Boot#### entries (EFI_LOAD_OPTION).
+func BootEntry(store VariableStore, n uint16) (*LoadOption, error)
+func SetBootEntry(store VariableStore, n uint16, lo *LoadOption) error
+func DeleteBootEntry(store VariableStore, n uint16) error
+func AddBootEntry(store VariableStore, lo *LoadOption) (uint16, error)
+func ListBootEntries(store VariableStore) (map[uint16]*LoadOption, []uint16, error)
+
+// One-shot, current, and timeout controls.
+func BootNext(store VariableStore) (uint16, bool, error)
+func SetBootNext(store VariableStore, n uint16) error
+func ClearBootNext(store VariableStore) error
+func BootCurrent(store VariableStore) (uint16, error)
+func Timeout(store VariableStore) (uint16, bool, error)
+func SetTimeout(store VariableStore, seconds uint16) error
+
+// EFI_LOAD_OPTION and EFI_DEVICE_PATH_PROTOCOL codecs (exact byte round-trip).
+func ParseLoadOption(b []byte) (*LoadOption, error)
+func (lo *LoadOption) Marshal() ([]byte, error)
+func ParseDevicePath(b []byte) ([]DevicePathNode, error)
+func MarshalDevicePath(nodes []DevicePathNode) ([]byte, error)
+func DevicePathText(nodes []DevicePathNode) string
+```
