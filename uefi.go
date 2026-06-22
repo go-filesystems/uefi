@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"os"
 	"unicode/utf16"
+
+	"github.com/go-volumes/safeio"
 )
 
 // Binary format constants derived from EDK2 MdeModulePkg/Include/Guid/VariableFormat.h.
@@ -319,15 +321,34 @@ func parseVariables(data []byte, storeOff, storeSize uint32, authVars bool) ([]V
 	if uint32(len(data)) < end {
 		end = uint32(len(data))
 	}
-	hdrSize := uint32(VarHeaderSize)
-	if authVars {
-		hdrSize = uint32(AuthVarHeaderSize)
-	}
 	var vars []Variable
 	off := storeOff + uint32(StoreHeaderSize)
-	for off+hdrSize <= end {
+	// LoopGuard backstop: every record advances `off` by at least one
+	// alignment unit, and the region is at most `end` bytes, so the walk
+	// can make at most `end` forward steps. Sizing the guard to `end`+1 (a
+	// strict over-estimate) guarantees termination even if a future change
+	// regresses the forward-progress check below.
+	guard := safeio.NewLoopGuard(int(end) + 1)
+	// Loop while at least the 2-byte StartId fits. parseOneVariable is the
+	// single bounds authority: it re-checks StartId, then that the full
+	// (auth or non-auth) header fits within `end`, surfacing a truncated
+	// header as an error rather than relying on this outer guard. Keeping
+	// the outer condition minimal avoids a uint32 wrap on `off+hdrSize`
+	// and keeps the truncation checks reachable.
+	for off+2 <= end {
+		if err := guard.Next(); err != nil {
+			break
+		}
 		v, next, err := parseOneVariable(data, off, end, authVars)
 		if err != nil {
+			break
+		}
+		// SECURITY: require strict forward progress. parseOneVariable
+		// computes `next` from attacker-controlled sizes; if a wrap (or a
+		// zero-length record) ever yielded next <= off, this loop would
+		// re-parse the same offset forever. Bounding 0 < off < next <= end
+		// makes the walk strictly monotonic and finite.
+		if next <= off || next > end {
 			break
 		}
 		if v != nil {
@@ -363,6 +384,16 @@ func parseOneVariable(data []byte, off, end uint32, authVars bool) (*Variable, u
 	if off+2 > end || binary.LittleEndian.Uint16(data[off:off+2]) != VariableData {
 		return nil, end, errors.New("end of variable region")
 	}
+	// The fields common to both layouts span the first 8 bytes:
+	// StartId(2) State(1) Reserved(1) Attributes(4). Verify that prefix
+	// fits within `end` (which is <= len(data)) BEFORE reading State or
+	// Attributes — otherwise a record that begins valid but is cut off
+	// after the StartId would index data[off+2] / data[off+4:] past the
+	// end of the slice and panic. This guard subsumes the StartId check
+	// above for the body reads.
+	if err := safeio.CheckBounds(int(off), 8, int(end)); err != nil {
+		return nil, end, fmt.Errorf("variable header prefix truncated: %w", err)
+	}
 	state := data[off+2]
 	attrs := binary.LittleEndian.Uint32(data[off+4:])
 
@@ -392,13 +423,38 @@ func parseOneVariable(data []byte, off, end uint32, authVars bool) (*Variable, u
 	// name and data — that's an EDK2 invariant we got wrong in the
 	// first cut. The alignment is applied only between records (so
 	// `next` is rounded up to HEADER_ALIGNMENT below).
-	nameOff := off + hdrSize
-	dataOff := nameOff + nameSize
-	next := alignUp(dataOff + dataSize)
+	//
+	// SECURITY: nameSize and dataSize are attacker-controlled uint32
+	// fields. Computing dataOff/next with uint32 arithmetic WRAPS when
+	// nameOff+nameSize or dataOff+dataSize overflow 2^32, which would
+	// bypass a naive `next > end` guard and let the slice/alloc below
+	// index ~4 GiB out of bounds. Validate every field independently in
+	// 64-bit BEFORE indexing or allocating: the name range and the data
+	// range must each lie fully within [0, end), and the rounded-up next
+	// offset must not exceed end. All comparisons are done against `end`
+	// (which is itself <= len(data)), so the int conversions below are
+	// safe once the bounds hold.
+	nameOff64 := int64(off) + int64(hdrSize)
+	dataOff64 := nameOff64 + int64(nameSize)
+	dataEnd64 := dataOff64 + int64(dataSize)
+	next64 := (dataEnd64 + headerAlignment - 1) &^ (headerAlignment - 1)
 
-	if next > end {
+	// CheckBounds rejects any range that runs past `end` (or wraps), so
+	// the [nameOff:nameOff+nameSize] and [dataOff:dataOff+dataSize]
+	// accesses below cannot panic.
+	if err := safeio.CheckBounds(int(nameOff64), int(nameSize), int(end)); err != nil {
+		return nil, end, fmt.Errorf("variable name extends beyond store: %w", err)
+	}
+	if err := safeio.CheckBounds(int(dataOff64), int(dataSize), int(end)); err != nil {
+		return nil, end, fmt.Errorf("variable data extends beyond store: %w", err)
+	}
+	if next64 > int64(end) {
 		return nil, end, errors.New("variable extends beyond store")
 	}
+	next := uint32(next64)
+	nameOff := uint32(nameOff64)
+	dataOff := uint32(dataOff64)
+
 	if state != VarAdded {
 		return nil, next, nil // skip deleted/transitional
 	}
@@ -406,7 +462,13 @@ func parseOneVariable(data []byte, off, end uint32, authVars bool) (*Variable, u
 	if err != nil {
 		return nil, next, nil
 	}
-	payload := make([]byte, dataSize)
+	// Bound the allocation by the store size: dataSize already passed
+	// CheckBounds against end, so this can only fail if end is itself
+	// nonsensical — in which case we surface an error rather than alloc.
+	payload, err := safeio.MakeBytes(int64(dataSize), int64(end))
+	if err != nil {
+		return nil, next, nil
+	}
 	copy(payload, data[dataOff:dataOff+dataSize])
 	return &Variable{Name: name, GUID: guid, Attributes: Attributes(attrs), Data: payload}, next, nil
 }

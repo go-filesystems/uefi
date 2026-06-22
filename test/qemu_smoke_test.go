@@ -112,7 +112,7 @@ func runQEMUSmoke(t *testing.T, qemu, code, vars string) error {
 	// wipe the variables — that's the scenario this test catches.
 	bad := []string{
 		"variable store corrupt",
-		"Reclaim",                // rare
+		"Reclaim",                 // rare
 		"Variable Storage is bad", // very rare
 	}
 	if containsAny(string(out), bad) {

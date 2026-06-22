@@ -332,8 +332,8 @@ type signedData struct {
 	Version          int
 	DigestAlgorithms []algorithmIdentifier `asn1:"set"`
 	ContentInfo      contentInfoEmpty
-	Certificates     asn1.RawValue       `asn1:"tag:0,optional"`
-	SignerInfos      []signerInfo        `asn1:"set"`
+	Certificates     asn1.RawValue `asn1:"tag:0,optional"`
+	SignerInfos      []signerInfo  `asn1:"set"`
 }
 
 type outerContentInfo struct {
