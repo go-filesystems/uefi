@@ -28,9 +28,16 @@ jobs:
     runs-on: ${{ matrix.runs-on }}
     env:
       # Coverage floor on the -coverpkg=uefi profile. The full test/ suite
-      # measures 94.6%; gate just below it so the build stays green while
-      # still catching regressions.
-      COVERAGE_FLOOR: "94.0"
+      # measures 98.0%. The residual ~2% is unreachable/defensive code:
+      # LoopGuard.Next backstops (bootvars/devicepath/parseVariables walks are
+      # already bounded), parseEFITime truncation checks whose only callers
+      # slice exactly efiTimeSize, Open's parseVariables error return (that
+      # helper never returns a non-nil error — it breaks and returns what it
+      # parsed), buildStore's end>len(buf) clamp, parseOneVariable's MakeBytes
+      # guard (CheckBounds already bounds dataSize), and rsa/asn1 marshal
+      # failures that cannot occur for these fixed input types. Gate at the
+      # measured value so the build stays green while catching regressions.
+      COVERAGE_FLOOR: "98.0"
     steps:
       - name: Checkout uefi
         uses: actions/checkout@v4
