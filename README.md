@@ -21,7 +21,8 @@ Targets the non-authenticated NvVar store (`OVMF_VARS.fd`, `QEMU_VARS.fd`). Typi
 | Delete | ✅ | Removes a variable; rewrites store atomically |
 | Boot variables | ✅ | `BootOrder` / `Boot####` / `BootNext` / `Timeout` semantic layer with `EFI_LOAD_OPTION` + device-path parse/marshal |
 | Secure Boot enrolment | ✅ | `EnrollSecureBootKeys` (PK/KEK/db) over `EFI_SIGNATURE_LIST` |
-| Authenticated writes | ⚠️ No | Time-based authenticated variables require a signature chain |
+| Format a fresh store | ✅ | `Format` (raw non-auth layout) / `FormatOVMF` (FV-wrapped + auth layout real QEMU OVMF prebuilts use, x86_64 or aarch64) |
+| Authenticated (time-based) writes | ✅ | `WriteAuthenticatedVariable` builds + RSA/PKCS#7-signs an `EFI_VARIABLE_AUTHENTICATION_2` descriptor via `AuthSigner`; the store itself does not verify the signature — that's firmware's job at runtime |
 
 ## Module
 
@@ -31,12 +32,23 @@ github.com/go-filesystems/uefi
 
 ## API
 
-`Open` returns a `Store` interface — callers never hold a concrete struct pointer.
+`Open`, `Format`, and `FormatOVMF` all return a `Store` interface — callers
+never hold a concrete struct pointer.
 
-### Open
+### Open / Format
 
 ```go
 func Open(path string) (Store, error)
+
+// Format creates a fresh store in the legacy raw non-auth layout (signature
+// GUID at offset 0, no firmware-volume wrapper).
+func Format(path string, sizeBytes int64) (Store, error)
+
+// FormatOVMF creates a fresh store in the FV-wrapped + auth layout real QEMU
+// OVMF prebuilts use — OVMFX86_64 for OVMF_VARS.fd, OVMFAArch64 for
+// QEMU_VARS.fd (ArmVirt). Prefer this over Format when targeting an actual
+// OVMF boot, since OVMF reformats any other layout on first boot.
+func FormatOVMF(path string, sizeBytes int64, flavor OVMFFlavor) (Store, error)
 ```
 
 `Store` combines `VariableStore` (UEFI operations) and `filesystem.Filesystem` (generic adapter).
@@ -160,8 +172,11 @@ err = fsuefi.EnrollSecureBootKeys(store, fsuefi.SecureBootKeys{
 > (Secure Boot enforced). Any subsequent change to `PK` or `KEK` must be signed with
 > the previous key.
 
-For the complete guide (key generation, disk image creation, QEMU command lines for
-x86-64 and arm64): [docs/uefi-secure-boot-qemu.md](../../../docs/uefi-secure-boot-qemu.md).
+For a working end-to-end example (OVMF firmware discovery, disk image
+creation, and the QEMU command lines for x86-64 and arm64), see
+[`test/qemu_smoke_test.go`](./test/qemu_smoke_test.go) — it's a skip-gated
+integration test that only runs when `qemu-system-*` and OVMF firmware are
+present locally.
 
 ## Boot variable management
 
