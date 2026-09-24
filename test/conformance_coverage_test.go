@@ -17,10 +17,12 @@ type failingStore struct {
 	list []fsuefi.Variable
 }
 
-func (f *failingStore) Close() error                     { return nil }
-func (f *failingStore) List() []fsuefi.Variable          { return f.list }
-func (f *failingStore) Set(fsuefi.Variable) error        { return errors.New("failingStore: Set refused") }
-func (f *failingStore) Delete(string, fsuefi.GUID) error { return errors.New("failingStore: Delete refused") }
+func (f *failingStore) Close() error              { return nil }
+func (f *failingStore) List() []fsuefi.Variable   { return f.list }
+func (f *failingStore) Set(fsuefi.Variable) error { return errors.New("failingStore: Set refused") }
+func (f *failingStore) Delete(string, fsuefi.GUID) error {
+	return errors.New("failingStore: Delete refused")
+}
 func (f *failingStore) Get(string, fsuefi.GUID) (fsuefi.Variable, error) {
 	return fsuefi.Variable{}, errors.New("failingStore: not found")
 }

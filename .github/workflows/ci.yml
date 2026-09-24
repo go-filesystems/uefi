@@ -66,6 +66,21 @@ jobs:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # PROVES: every Go file here is gofmt-clean.
+      #    DOES NOT PROVE: anything about what the code does.
+      #
+      #    There was no such step, and test/conformance_coverage_test.go had
+      #    been unformatted on main for some time with CI green the whole way.
+      #    Formatting is the one property a reviewer stops checking the moment
+      #    a machine is believed to be checking it.
+      - name: gofmt
+        working-directory: uefi
+        run: |
+          drift=$(gofmt -l .)
+          if [ -n "$drift" ]; then
+            echo "::error::not gofmt-clean:"; echo "$drift"; exit 1
+          fi
+
       - name: Run Taskfile ci
         working-directory: uefi
         env:
