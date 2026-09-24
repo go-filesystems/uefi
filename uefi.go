@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"unicode/utf16"
 
@@ -230,7 +231,25 @@ func (s *store) Get(name string, guid GUID) (Variable, error) {
 			return v, nil
 		}
 	}
-	return Variable{}, fmt.Errorf("uefi: variable %q not found", name)
+	return Variable{}, errNoVariable(name)
+}
+
+// errNoVariable says a named variable is not in the store.
+//
+// ⛔ It wraps [io/fs.ErrNotExist], which is the contract in
+// go-filesystems/interface: a path that is not there must satisfy
+// errors.Is(err, fs.ErrNotExist). *store satisfies filesystem.Filesystem, so
+// a tool written against that interface reaches this driver without knowing
+// it is a variable store, asks for a path, and classifies what comes back.
+//
+// There is no ambiguity to guard here, unlike in the B-tree drivers: this is a
+// linear scan finding no match. A store that cannot be PARSED fails in Open,
+// before any name is looked up, and keeps its own error.
+//
+// One function rather than the same fmt.Errorf at each site, because the two
+// original call sites already had the message written out twice.
+func errNoVariable(name string) error {
+	return fmt.Errorf("uefi: variable %q not found: %w", name, fs.ErrNotExist)
 }
 
 // Set creates or replaces a variable. The store file is rewritten atomically.
@@ -258,7 +277,7 @@ func (s *store) Delete(name string, guid GUID) error {
 		newVars = append(newVars, existing)
 	}
 	if !found {
-		return fmt.Errorf("uefi: variable %q not found", name)
+		return errNoVariable(name)
 	}
 	return s.flush(newVars)
 }
