@@ -3,6 +3,7 @@ package filesystem_uefi
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	filesystem "github.com/go-filesystems/interface"
@@ -63,7 +64,9 @@ func (s *store) DeleteFile(path string) error {
 // for any other path (UEFI variables have no directory hierarchy).
 func (s *store) ListDir(path string) ([]filesystem.DirEntry, error) {
 	if path != "/" && path != "" {
-		return nil, fmt.Errorf("uefi: ListDir: no such directory %q", path)
+		// A flat namespace has exactly one directory. Anything else is a
+		// path that is not there, and owes the same answer as a missing file.
+		return nil, fmt.Errorf("uefi: ListDir: no such directory %q: %w", path, fs.ErrNotExist)
 	}
 	vars := s.List()
 	entries := make([]filesystem.DirEntry, len(vars))
