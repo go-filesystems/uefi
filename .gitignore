@@ -1,0 +1,5 @@
+# Written by `task ci` and by any local `go test -coverprofile`.
+# Regenerated on every run and uploaded as a CI artifact, so a committed
+# copy is only ever a stale one.
+cover.out
+cover.html
