@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
+
+	"github.com/go-volumes/safeio"
 )
 
 // Standard UEFI variable store sizes used by QEMU firmware images.
@@ -28,6 +30,12 @@ const (
 func Format(path string, sizeBytes int64) (Store, error) {
 	if sizeBytes < int64(StoreHeaderSize)+4 {
 		return nil, fmt.Errorf("uefi: Format: size %d is too small (minimum %d)", sizeBytes, int64(StoreHeaderSize)+4)
+	}
+
+	// A store larger than Open reads could not be opened again, and the
+	// header's Size is a uint32: refuse before allocating the buffer.
+	if sizeBytes > DefaultMaxFileSize {
+		return nil, fmt.Errorf("uefi: Format: size %d exceeds the %d-byte store ceiling: %w", sizeBytes, DefaultMaxFileSize, safeio.ErrTooLarge)
 	}
 
 	buf := makeEmptyStore(sizeBytes)
@@ -93,6 +101,10 @@ func FormatOVMF(path string, sizeBytes int64, flavor OVMFFlavor) (Store, error) 
 	}
 	if sizeBytes < minSize {
 		return nil, fmt.Errorf("uefi: FormatOVMF: size %d is too small (minimum %d for flavor %d)", sizeBytes, minSize, flavor)
+	}
+
+	if sizeBytes > DefaultMaxFileSize {
+		return nil, fmt.Errorf("uefi: FormatOVMF: size %d exceeds the %d-byte store ceiling: %w", sizeBytes, DefaultMaxFileSize, safeio.ErrTooLarge)
 	}
 
 	buf := makeEmptyOVMFStore(sizeBytes, flavor)

@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"unicode/utf16"
@@ -143,6 +144,7 @@ type VariableStore interface {
 // changing flavor mid-flight would corrupt the file for OVMF.
 type store struct {
 	path      string
+	lim       Limits // resolved: no zero field
 	vars      []Variable
 	fvWrapped bool   // file begins with a 72-byte FV header
 	authVars  bool   // variable records use AUTHENTICATED_VARIABLE_HEADER (60 B)
@@ -158,11 +160,75 @@ type store struct {
 // is sticky — flush() preserves whatever flavor was found at Open
 // time so the file stays compatible with the firmware that owns it.
 func Open(path string) (Store, error) {
-	data, err := os.ReadFile(path)
+	return OpenLimits(path, Limits{})
+}
+
+// Default ceilings for an untrusted store file. Real NvVar stores are 64 KiB
+// to a few MiB (QEMU's aarch64 pflash slot is 64 MiB although the firmware
+// uses 768 KiB of it) and hold tens to hundreds of variables.
+const (
+	// DefaultMaxFileSize is the largest store file Open reads into memory.
+	DefaultMaxFileSize int64 = 256 << 20
+	// DefaultMaxVariables is the most variables Open parses out of a store. A
+	// 32-byte record costs about 500 bytes while it is parsed (measured: a
+	// 16 MiB store of empty records took 255 MB), so the record count, not the
+	// file size, is what must be bounded.
+	DefaultMaxVariables = 1 << 16
+)
+
+// Limits bounds what Open may spend on an untrusted store file. A zero field
+// takes its default. Exceeding a limit returns an error wrapping
+// safeio.ErrTooLarge before the memory is spent.
+type Limits struct {
+	// MaxFileSize bounds the store file read into memory (and re-read by
+	// Set/Delete). Default DefaultMaxFileSize.
+	MaxFileSize int64
+	// MaxVariables bounds the variables parsed out of the store. Default
+	// DefaultMaxVariables.
+	MaxVariables int
+}
+
+func (l Limits) resolve() Limits {
+	if l.MaxFileSize == 0 {
+		l.MaxFileSize = DefaultMaxFileSize
+	}
+	if l.MaxVariables == 0 {
+		l.MaxVariables = DefaultMaxVariables
+	}
+	return l
+}
+
+// readStoreFile reads path, refusing a file longer than max bytes. The size is
+// checked first (a sparse file of gigabytes is refused without reading it) and
+// the read is capped anyway, for a file that grows meanwhile.
+func readStoreFile(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	if st, err := f.Stat(); err == nil && st.Size() > max {
+		return nil, fmt.Errorf("store file is %d bytes, more than %d: %w", st.Size(), max, safeio.ErrTooLarge)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("store file is more than %d bytes: %w", max, safeio.ErrTooLarge)
+	}
+	return data, nil
+}
+
+// OpenLimits is Open with an explicit resource budget; use it to open an
+// untrusted store with tighter ceilings than the defaults.
+func OpenLimits(path string, lim Limits) (Store, error) {
+	lim = lim.resolve()
+	data, err := readStoreFile(path, lim.MaxFileSize)
 	if err != nil {
 		return nil, fmt.Errorf("uefi: read file: %w", err)
 	}
-	s := &store{path: path}
+	s := &store{path: path, lim: lim}
 	s.fvWrapped = detectFvWrap(data)
 	if s.fvWrapped {
 		s.storeOff = FvHeaderSize
@@ -188,8 +254,16 @@ func Open(path string) (Store, error) {
 		return nil, fmt.Errorf("uefi: parse: store not healthy")
 	}
 	s.storeSize = binary.LittleEndian.Uint32(data[s.storeOff+16 : s.storeOff+20])
+	// The header's Size is attacker-controlled. Clamp it to the bytes the file
+	// holds: storeOff+storeSize in uint32 wrapped for a large Size (the store
+	// then read as empty, silently), and a Size beyond the file let Set
+	// serialize past the end of the buffer, which copy() truncated without an
+	// error.
+	if avail := int64(len(data)) - int64(s.storeOff); int64(s.storeSize) > avail {
+		s.storeSize = uint32(avail)
+	}
 
-	vars, err := parseVariables(data, s.storeOff, s.storeSize, s.authVars)
+	vars, err := parseVariables(data, s.storeOff, s.storeSize, s.authVars, s.lim.MaxVariables)
 	if err != nil {
 		return nil, fmt.Errorf("uefi: parse: %w", err)
 	}
@@ -289,7 +363,7 @@ func (s *store) Delete(name string, guid GUID) error {
 // taken verbatim from the original file bytes — we don't recompute
 // the FV checksum because no fields inside the header change here.
 func (s *store) flush(vars []Variable) error {
-	orig, err := os.ReadFile(s.path)
+	orig, err := readStoreFile(s.path, s.lim.MaxFileSize)
 	if err != nil {
 		return fmt.Errorf("uefi: read original: %w", err)
 	}
@@ -310,18 +384,23 @@ func (s *store) flush(vars []Variable) error {
 // rest of storeSize bytes. Anything past storeOff+storeSize is left
 // untouched — that region holds FTW state on real OVMF varstores.
 func buildStore(orig []byte, storeOff, storeSize uint32, payload []byte) ([]byte, error) {
-	headerEnd := storeOff + StoreHeaderSize
-	if headerEnd+uint32(len(payload)) > storeOff+storeSize {
+	// 64-bit arithmetic throughout: storeOff+storeSize and the payload length
+	// wrap in uint32. The store must lie inside the file as it is NOW (it may
+	// have been truncated since Open), or copy() below would silently cut the
+	// payload short.
+	headerEnd := int64(storeOff) + StoreHeaderSize
+	end64 := int64(storeOff) + int64(storeSize)
+	if end64 > int64(len(orig)) {
+		return nil, errors.New("uefi: store extends beyond the file")
+	}
+	if headerEnd+int64(len(payload)) > end64 {
 		return nil, errors.New("uefi: variables exceed store size")
 	}
 	buf := make([]byte, len(orig))
 	copy(buf, orig)
 	// Erase the variable region (everything inside the NvVar store
 	// after the 28-byte header).
-	end := int(storeOff + storeSize)
-	if end > len(buf) {
-		end = len(buf)
-	}
+	end := int(end64)
 	for i := int(headerEnd); i < end; i++ {
 		buf[i] = 0xFF
 	}
@@ -335,11 +414,14 @@ func buildStore(orig []byte, storeOff, storeSize uint32, payload []byte) ([]byte
 // over the 32-byte non-auth one — auth records carry an extra
 // MonotonicCount(8) + TimeStamp(16) + PubKeyIndex(4) prefix between
 // the Attributes field and NameSize.
-func parseVariables(data []byte, storeOff, storeSize uint32, authVars bool) ([]Variable, error) {
-	end := storeOff + storeSize
-	if uint32(len(data)) < end {
-		end = uint32(len(data))
+func parseVariables(data []byte, storeOff, storeSize uint32, authVars bool, maxVars int) ([]Variable, error) {
+	// Open clamps storeSize to the file, so the sum cannot wrap; the clamp to
+	// len(data) stays as the single bounds authority for any other caller.
+	end64 := int64(storeOff) + int64(storeSize)
+	if end64 > int64(len(data)) {
+		end64 = int64(len(data))
 	}
+	end := uint32(end64)
 	var vars []Variable
 	off := storeOff + uint32(StoreHeaderSize)
 	// LoopGuard backstop: every record advances `off` by at least one
@@ -371,6 +453,11 @@ func parseVariables(data []byte, storeOff, storeSize uint32, authVars bool) ([]V
 			break
 		}
 		if v != nil {
+			// The record count is what the file size does not bound: each
+			// 32-byte record costs ~500 bytes while it is parsed.
+			if len(vars) >= maxVars {
+				return nil, fmt.Errorf("store holds more than %d variables: %w", maxVars, safeio.ErrTooLarge)
+			}
 			vars = append(vars, *v)
 		}
 		off = next

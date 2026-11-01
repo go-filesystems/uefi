@@ -53,6 +53,28 @@ func FormatOVMF(path string, sizeBytes int64, flavor OVMFFlavor) (Store, error)
 
 `Store` combines `VariableStore` (UEFI operations) and `filesystem.Filesystem` (generic adapter).
 
+### Untrusted input
+
+A store file is untrusted input. `Open` bounds what it spends before it spends
+it, and an exceeded bound returns an error wrapping `safeio.ErrTooLarge`:
+
+| Bound | Default | Why |
+| --- | --- | --- |
+| store file read into memory (`Open`, and the re-read in `Set`/`Delete`) | 256 MiB (`DefaultMaxFileSize`) | QEMU's aarch64 pflash slot is 64 MiB; a sparse 256 MiB file used to cost 268 MB |
+| variables parsed (`DefaultMaxVariables`) | 65 536 | a 32-byte record costs about 500 bytes while it is parsed: a 16 MiB store of empty records took 255 MB |
+| `Format` / `FormatOVMF` size | `DefaultMaxFileSize` | a store larger than `Open` reads could not be opened again |
+
+```go
+s, err := fsuefi.OpenLimits("OVMF_VARS.fd", fsuefi.Limits{MaxFileSize: 8 << 20, MaxVariables: 1024})
+```
+
+A zero `Limits` field takes its default. The header's `Size` field is clamped to
+the bytes the file holds: it used to wrap a `uint32` (the store then read as
+empty, silently) and let `Set` write a payload that `copy` cut short without an
+error. Load options (64 KiB) and device paths (64 KiB) were already bounded.
+Fuzz targets: `FuzzOpen`, `FuzzList`, `FuzzParseVariables`, `FuzzParseLoadOption`,
+`FuzzParseDevicePath`.
+
 ### VariableStore interface
 
 ```go
