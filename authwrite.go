@@ -3,15 +3,14 @@ package filesystem_uefi
 import (
 	"bytes"
 	"crypto"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
-	"encoding/asn1"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/big"
 	"time"
+
+	"github.com/go-authn/cms"
 )
 
 // Time-based authenticated variable support (EFI_VARIABLE_AUTHENTICATION_2).
@@ -29,8 +28,8 @@ import (
 // fields are concatenated in their on-the-wire byte order (UEFI 2.10 §8.2.2).
 //
 // This file implements building, signing and parsing that descriptor. Signing
-// uses the Go standard library only (crypto/x509 + a minimal PKCS#7
-// SignedData encoder), so the module pulls in no third-party dependency.
+// goes through github.com/go-authn/cms (cms.Sign), the fleet's one CMS/PKCS#7
+// implementation.
 
 // winCertRevision is WIN_CERTIFICATE.wRevision for UEFI authenticated writes.
 const winCertRevision = 0x0200
@@ -184,7 +183,15 @@ func BuildAuthentication2(name string, guid GUID, attrs Attributes, data []byte,
 	}
 
 	tbs := digestTBS(name, guid, attrs, ts, data)
-	p7, err := signPKCS7Detached(tbs, signer)
+	// Detached PKCS#7, SHA-256, RSA PKCS#1 v1.5, one certificate, no signed
+	// attributes: the shape edk2's Pkcs7Verify reads (cms.SignOptions.NoSignedAttrs).
+	p7, err := cms.Sign(tbs, cms.SignOptions{
+		Signer:        signer.Key,
+		Certificate:   signer.Cert,
+		Hash:          crypto.SHA256,
+		Detached:      true,
+		NoSignedAttrs: true,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("uefi: BuildAuthentication2: %w", err)
 	}
@@ -284,120 +291,4 @@ func WriteAuthenticatedVariable(s VariableStore, name string, guid GUID, attrs A
 		return fmt.Errorf("uefi: WriteAuthenticatedVariable %q: %w", name, err)
 	}
 	return nil
-}
-
-// --- Minimal PKCS#7 SignedData encoder (RFC 2315 / detached) -------------
-//
-// The Go standard library has no PKCS#7 *producer*, and this module forbids
-// third-party dependencies. We therefore emit the small, fixed SignedData
-// shape that UEFI authenticated writes require: a single signer, no
-// authenticated attributes, detached content (eContent absent), SHA-256
-// digest, RSA (rsaEncryption / PKCS#1 v1.5) signature. This is precisely the
-// structure produced by `sbvarsign`/`sign-efi-sig-list` and accepted by edk2's
-// Pkcs7Verify.
-
-var (
-	oidData         = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 1}
-	oidSignedData   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 7, 2}
-	oidSHA256       = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 2, 1}
-	oidRSAEncrypt   = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 1, 1}
-	pkcs7SignerVer  = 1
-	pkcs7SignedVer  = 1
-	digestAlgorithm = crypto.SHA256
-)
-
-type algorithmIdentifier struct {
-	Algorithm  asn1.ObjectIdentifier
-	Parameters asn1.RawValue `asn1:"optional"`
-}
-
-type issuerAndSerial struct {
-	IssuerRaw    asn1.RawValue
-	SerialNumber *big.Int
-}
-
-type contentInfoEmpty struct {
-	ContentType asn1.ObjectIdentifier
-}
-
-type signerInfo struct {
-	Version                   int
-	IssuerAndSerialNumber     issuerAndSerial
-	DigestAlgorithm           algorithmIdentifier
-	DigestEncryptionAlgorithm algorithmIdentifier
-	EncryptedDigest           []byte
-}
-
-type signedData struct {
-	Version          int
-	DigestAlgorithms []algorithmIdentifier `asn1:"set"`
-	ContentInfo      contentInfoEmpty
-	Certificates     asn1.RawValue `asn1:"tag:0,optional"`
-	SignerInfos      []signerInfo  `asn1:"set"`
-}
-
-type outerContentInfo struct {
-	ContentType asn1.ObjectIdentifier
-	Content     asn1.RawValue
-}
-
-// signPKCS7Detached produces a DER-encoded PKCS#7 SignedData over content,
-// detached (the content itself is not embedded), using SHA-256 + RSA.
-func signPKCS7Detached(content []byte, signer AuthSigner) ([]byte, error) {
-	h := digestAlgorithm.New()
-	h.Write(content)
-	digest := h.Sum(nil)
-
-	sig, err := rsa.SignPKCS1v15(rand.Reader, signer.Key, digestAlgorithm, digest)
-	if err != nil {
-		return nil, fmt.Errorf("rsa sign: %w", err)
-	}
-
-	si := signerInfo{
-		Version: pkcs7SignerVer,
-		IssuerAndSerialNumber: issuerAndSerial{
-			IssuerRaw:    asn1.RawValue{FullBytes: signer.Cert.RawIssuer},
-			SerialNumber: signer.Cert.SerialNumber,
-		},
-		DigestAlgorithm:           algorithmIdentifier{Algorithm: oidSHA256, Parameters: asn1.NullRawValue},
-		DigestEncryptionAlgorithm: algorithmIdentifier{Algorithm: oidRSAEncrypt, Parameters: asn1.NullRawValue},
-		EncryptedDigest:           sig,
-	}
-
-	sd := signedData{
-		Version:          pkcs7SignedVer,
-		DigestAlgorithms: []algorithmIdentifier{{Algorithm: oidSHA256, Parameters: asn1.NullRawValue}},
-		ContentInfo:      contentInfoEmpty{ContentType: oidData},
-		Certificates: asn1.RawValue{
-			Class:      asn1.ClassContextSpecific,
-			Tag:        0,
-			IsCompound: true,
-			Bytes:      signer.Cert.Raw,
-		},
-		SignerInfos: []signerInfo{si},
-	}
-
-	sdDER, err := asn1.Marshal(sd)
-	if err != nil {
-		return nil, fmt.Errorf("marshal SignedData: %w", err)
-	}
-
-	// Wrap the SignedData in a [0] EXPLICIT context tag, as PKCS#7
-	// ContentInfo requires. asn1.Marshal of a RawValue with only FullBytes
-	// set emits those bytes verbatim and would drop a struct-level explicit
-	// tag, so we build the wrapper RawValue ourselves.
-	outer := outerContentInfo{
-		ContentType: oidSignedData,
-		Content: asn1.RawValue{
-			Class:      asn1.ClassContextSpecific,
-			Tag:        0,
-			IsCompound: true,
-			Bytes:      sdDER,
-		},
-	}
-	out, err := asn1.Marshal(outer)
-	if err != nil {
-		return nil, fmt.Errorf("marshal ContentInfo: %w", err)
-	}
-	return out, nil
 }
