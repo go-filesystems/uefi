@@ -22,7 +22,7 @@ Targets the non-authenticated NvVar store (`OVMF_VARS.fd`, `QEMU_VARS.fd`). Typi
 | Boot variables | ✅ | `BootOrder` / `Boot####` / `BootNext` / `Timeout` semantic layer with `EFI_LOAD_OPTION` + device-path parse/marshal |
 | Secure Boot enrolment | ✅ | `EnrollSecureBootKeys` (PK/KEK/db) over `EFI_SIGNATURE_LIST` |
 | Format a fresh store | ✅ | `Format` (raw non-auth layout) / `FormatOVMF` (FV-wrapped + auth layout real QEMU OVMF prebuilts use, x86_64 or aarch64) |
-| Authenticated (time-based) writes | ✅ | `WriteAuthenticatedVariable` builds + RSA/PKCS#7-signs an `EFI_VARIABLE_AUTHENTICATION_2` descriptor via `AuthSigner`; the store itself does not verify the signature — that's firmware's job at runtime |
+| Authenticated (time-based) writes | ✅ | `WriteAuthenticatedVariable` builds + RSA/PKCS#7-signs (through [go-authn/cms](https://github.com/go-authn/cms)) an `EFI_VARIABLE_AUTHENTICATION_2` descriptor via `AuthSigner`; the store itself does not verify the signature — that's firmware's job at runtime |
 
 ## Module
 
